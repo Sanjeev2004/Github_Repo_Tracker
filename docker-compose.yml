@@ -1,0 +1,101 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-github_events}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_secure_pass_123}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - pipeline-network
+    restart: always
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:9092'
+      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    networks:
+      - pipeline-network
+
+  producer:
+    build:
+      context: ./producer
+    container_name: github-producer
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC=github-events
+      - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS:-10}
+    depends_on:
+      - kafka
+    networks:
+      - pipeline-network
+    restart: on-failure
+
+  streaming:
+    build:
+      context: ./streaming
+    container_name: spark-streaming
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC=github-events
+      - POSTGRES_DB=${POSTGRES_DB:-github_events}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres_secure_pass_123}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - SPARK_WINDOW_DURATION=${SPARK_WINDOW_DURATION:-"5 minutes"}
+      - SPARK_SLIDE_DURATION=${SPARK_SLIDE_DURATION:-"1 minute"}
+      - SPARK_WATERMARK_DURATION=${SPARK_WATERMARK_DURATION:-"10 minutes"}
+    depends_on:
+      - kafka
+      - postgres
+    networks:
+      - pipeline-network
+    restart: on-failure
+
+  dashboard:
+    build:
+      context: ./dashboards
+    container_name: streamlit-dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-github_events}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres_secure_pass_123}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+    depends_on:
+      - postgres
+    networks:
+      - pipeline-network
+    restart: on-failure
+
+networks:
+  pipeline-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
