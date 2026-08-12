@@ -26,6 +26,8 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "github-events")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "10"))
+DEDUP_CACHE_SIZE = int(os.getenv("DEDUP_CACHE_SIZE", "10000"))
+KAFKA_DELIVERY_TIMEOUT_SECONDS = float(os.getenv("KAFKA_DELIVERY_TIMEOUT_SECONDS", "30"))
 
 # Globals for graceful shutdown
 running = True
@@ -63,7 +65,7 @@ def fetch_github_events(headers: Dict[str, str]) -> list:
                 
         if response.status_code == 200:
             return response.json()
-        elif response.status_code == 403:
+        elif response.status_code in (403, 429):
             logger.error("GitHub API Rate limit exceeded (403 Forbidden).")
             if reset_time:
                 sleep_duration = max(0, int(reset_time) - int(time.time())) + 2
@@ -111,7 +113,7 @@ def main() -> None:
         logger.warning("No GITHUB_TOKEN env variable found. Using unauthenticated requests (60 req/hr).")
 
     # Bounded list of processed event IDs to avoid sending duplicates to Kafka
-    processed_event_ids = deque(maxlen=1000)
+    processed_event_ids = deque(maxlen=DEDUP_CACHE_SIZE)
     seen_set = set()
 
     logger.info("Starting polling loop...")
@@ -127,17 +129,6 @@ def main() -> None:
                 continue
                 
             if event_id not in seen_set:
-                # Add to deduplication structures
-                seen_set.add(event_id)
-                processed_event_ids.append(event_id)
-                # Keep seen_set synchronized with deque
-                if len(seen_set) > 1000:
-                    # Remove oldest elements
-                    while len(seen_set) > len(processed_event_ids):
-                        # Simple cleanup of set
-                        seen_set = set(processed_event_ids)
-                        break
-
                 # Prepare payload
                 # We extract essential fields and keep raw fields as needed
                 payload = {
@@ -158,6 +149,11 @@ def main() -> None:
                         value=serialized_payload, 
                         callback=kafka_delivery_report
                     )
+                    producer.poll(0)
+                    if len(processed_event_ids) == DEDUP_CACHE_SIZE:
+                        seen_set.discard(processed_event_ids[0])
+                    processed_event_ids.append(event_id)
+                    seen_set.add(event_id)
                     new_events_count += 1
                 except BufferError:
                     logger.warning("Kafka local queue full, flushing and waiting...")
@@ -165,6 +161,11 @@ def main() -> None:
                     # Retry once
                     try:
                         producer.produce(KAFKA_TOPIC, key=event_id.encode("utf-8"), value=serialized_payload, callback=kafka_delivery_report)
+                        producer.poll(0)
+                        if len(processed_event_ids) == DEDUP_CACHE_SIZE:
+                            seen_set.discard(processed_event_ids[0])
+                        processed_event_ids.append(event_id)
+                        seen_set.add(event_id)
                         new_events_count += 1
                     except Exception as retry_err:
                         logger.error(f"Failed to produce message on retry: {retry_err}")
@@ -172,7 +173,7 @@ def main() -> None:
                     logger.error(f"Error producing message to Kafka: {produce_err}")
 
         # Flush Kafka buffer to deliver messages
-        producer.poll(0)
+        producer.poll(0.1)
         
         if new_events_count > 0:
             logger.info(f"Published {new_events_count} new GitHub events to Kafka.")
@@ -182,11 +183,15 @@ def main() -> None:
         sleep_needed = max(0.1, POLL_INTERVAL_SECONDS - elapsed)
         
         # Poll Kafka events for callbacks periodically
-        time.sleep(sleep_needed)
+        deadline = time.time() + sleep_needed
+        while running and time.time() < deadline:
+            producer.poll(0.2)
 
     # Clean up before exit
     logger.info("Flushing remaining Kafka messages...")
-    producer.flush(timeout=5.0)
+    remaining = producer.flush(timeout=KAFKA_DELIVERY_TIMEOUT_SECONDS)
+    if remaining:
+        logger.error("Producer stopped with %s undelivered messages", remaining)
     logger.info("Producer stopped.")
 
 if __name__ == "__main__":

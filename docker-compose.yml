@@ -4,16 +4,17 @@ services:
     container_name: postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-github_events}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_secure_pass_123}
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - pipeline-network
     restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   kafka:
     image: confluentinc/cp-kafka:7.4.0
@@ -37,6 +38,11 @@ services:
       CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
     networks:
       - pipeline-network
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server kafka:29092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   producer:
     build:
@@ -48,7 +54,8 @@ services:
       - KAFKA_TOPIC=github-events
       - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS:-10}
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     networks:
       - pipeline-network
     restart: on-failure
@@ -61,19 +68,24 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - KAFKA_TOPIC=github-events
       - POSTGRES_DB=${POSTGRES_DB:-github_events}
-      - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres_secure_pass_123}
+      - POSTGRES_USER=${POSTGRES_USER:?POSTGRES_USER must be set}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - SPARK_WINDOW_DURATION=${SPARK_WINDOW_DURATION:-"5 minutes"}
-      - SPARK_SLIDE_DURATION=${SPARK_SLIDE_DURATION:-"1 minute"}
-      - SPARK_WATERMARK_DURATION=${SPARK_WATERMARK_DURATION:-"10 minutes"}
+      - SPARK_WINDOW_DURATION=${SPARK_WINDOW_DURATION:-5 minutes}
+      - SPARK_SLIDE_DURATION=${SPARK_SLIDE_DURATION:-1 minute}
+      - SPARK_WATERMARK_DURATION=${SPARK_WATERMARK_DURATION:-10 minutes}
+      - SPARK_CHECKPOINT_DIR=/checkpoints/github-events
     depends_on:
-      - kafka
-      - postgres
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     networks:
       - pipeline-network
     restart: on-failure
+    volumes:
+      - spark_checkpoints:/checkpoints
 
   dashboard:
     build:
@@ -83,12 +95,13 @@ services:
       - "8501:8501"
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-github_events}
-      - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres_secure_pass_123}
+      - POSTGRES_USER=${POSTGRES_USER:?POSTGRES_USER must be set}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     networks:
       - pipeline-network
     restart: on-failure
@@ -99,3 +112,4 @@ networks:
 
 volumes:
   postgres_data:
+  spark_checkpoints:

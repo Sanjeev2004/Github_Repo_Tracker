@@ -64,6 +64,7 @@ cp .env.example .env
 ```
 
 Open `.env` and fill in the values:
+- **`POSTGRES_PASSWORD`**: Must be a long, randomly generated secret. Do not use the example value in a shared or production environment.
 - **`GITHUB_TOKEN`**: While optional, it is **highly recommended** to supply a Personal Access Token (PAT). Unauthenticated requests are limited by GitHub to 60/hour, while authenticated requests enjoy **5,000/hour**, allowing seamless continuous streaming.
 - Customize database credentials, polling interval (`POLL_INTERVAL_SECONDS`), or Spark window settings if desired.
 
@@ -72,6 +73,8 @@ Build and deploy all services in the background using Docker Compose:
 ```bash
 docker compose up --build -d
 ```
+
+For a production deployment, terminate TLS and restrict access to the dashboard and database at an ingress/firewall layer. Keep PostgreSQL and Kafka private; only expose the dashboard through authenticated access.
 
 This starts:
 - **PostgreSQL**: Serving as the analytical data warehouse.
@@ -85,6 +88,8 @@ To view container startup logs or trace live performance, run:
 ```bash
 docker compose logs -f
 ```
+
+The Spark checkpoint is stored in the `spark_checkpoints` volume so the stream can resume after container restarts. Back up PostgreSQL and this checkpoint volume according to your recovery objectives.
 
 ---
 

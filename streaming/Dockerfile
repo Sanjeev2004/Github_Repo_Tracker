@@ -28,4 +28,7 @@ RUN python -c "from pyspark.sql import SparkSession; SparkSession.builder.appNam
 # Copy source code
 COPY spark_job.py .
 
+RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
+USER appuser
+
 CMD ["python", "spark_job.py"]

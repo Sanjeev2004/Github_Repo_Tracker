@@ -22,9 +22,11 @@ KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "github-events")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "github_events")
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres_secure_pass_123")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+CHECKPOINT_DIR = os.getenv("SPARK_CHECKPOINT_DIR", "/checkpoints/github-events")
+POSTGRES_CONNECT_TIMEOUT_SECONDS = int(os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS", "10"))
 
 SPARK_WINDOW_DURATION = os.getenv("SPARK_WINDOW_DURATION", "5 minutes")
 SPARK_SLIDE_DURATION = os.getenv("SPARK_SLIDE_DURATION", "1 minute")
@@ -47,7 +49,8 @@ def write_to_postgres(df, epoch_id) -> None:
             user=POSTGRES_USER,
             password=POSTGRES_PASSWORD,
             host=POSTGRES_HOST,
-            port=POSTGRES_PORT
+            port=POSTGRES_PORT,
+            connect_timeout=POSTGRES_CONNECT_TIMEOUT_SECONDS
         )
         cursor = conn.cursor()
         
@@ -71,7 +74,8 @@ def write_to_postgres(df, epoch_id) -> None:
                 print(f"Partition upserted {rows_written} aggregated event window records successfully.")
         except Exception as e:
             conn.rollback()
-            print(f"Error writing partition batch to PostgreSQL: {e}")
+            logger.exception("Error writing partition batch to PostgreSQL")
+            raise
         finally:
             cursor.close()
             conn.close()
@@ -111,8 +115,8 @@ def main() -> None:
         .format("kafka") \
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS) \
         .option("subscribe", KAFKA_TOPIC) \
-        .option("startingOffsets", "latest") \
-        .option("failOnDataLoss", "false") \
+        .option("startingOffsets", os.getenv("KAFKA_STARTING_OFFSETS", "latest")) \
+        .option("failOnDataLoss", os.getenv("KAFKA_FAIL_ON_DATA_LOSS", "true").lower() == "true") \
         .load()
 
     # Convert binary values to String, parse JSON schema, extract fields, and parse ISO timestamp
@@ -145,7 +149,7 @@ def main() -> None:
 
     # Write aggregated streams into PostgreSQL using foreachBatch and checkpointing
     # Checkpointing is crucial for Structured Streaming fault tolerance
-    checkpoint_dir = "/tmp/spark-checkpoints-github-events"
+    checkpoint_dir = CHECKPOINT_DIR
     
     query = aggregated_metrics.writeStream \
         .foreachBatch(write_to_postgres) \
