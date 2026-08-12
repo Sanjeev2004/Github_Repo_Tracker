@@ -79,11 +79,11 @@ st.markdown("""
 # DB connection config
 DB_NAME = os.getenv("POSTGRES_DB", "github_events")
 DB_USER = os.getenv("POSTGRES_USER", "postgres")
-DB_PASS = os.getenv("POSTGRES_PASSWORD", "")
+DB_PASS = os.getenv("POSTGRES_PASSWORD", "postgres_secure_pass_123")
 DB_HOST = os.getenv("POSTGRES_HOST", "localhost")
 DB_PORT = os.getenv("POSTGRES_PORT", "5432")
 
-@st.cache_resource(ttl=300)
+@st.cache_resource(ttl=10)
 def get_db_connection():
     """Establish and cache a connection to PostgreSQL."""
     try:
@@ -92,9 +92,7 @@ def get_db_connection():
             user=DB_USER,
             password=DB_PASS,
             host=DB_HOST,
-            port=DB_PORT,
-            connect_timeout=5,
-            application_name="github-events-dashboard"
+            port=DB_PORT
         )
         return conn
     except Exception as e:
@@ -118,7 +116,7 @@ def fetch_data() -> pd.DataFrame:
         ORDER BY window_start DESC;
     """
     try:
-        df = pd.read_sql_query(query + " LIMIT 100000", conn)
+        df = pd.read_sql_query(query, conn)
         # Convert date columns to timestamps
         df['window_start'] = pd.to_datetime(df['window_start'])
         df['window_end'] = pd.to_datetime(df['window_end'])

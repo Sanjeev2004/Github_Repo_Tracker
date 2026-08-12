@@ -3,6 +3,3 @@ __pycache__/
 .env
 .venv/
 checkpoints/
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/

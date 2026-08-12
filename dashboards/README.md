@@ -40,7 +40,7 @@ Power BI Desktop connects natively to our local PostgreSQL database. Follow thes
 4. Click **OK**.
 5. Select **Database** credentials on the left side, enter:
    - **User name:** `postgres`
-    - **Password:** The value of `POSTGRES_PASSWORD` from your private `.env` file.
+   - **Password:** `postgres_secure_pass_123`
 6. Click **Connect** (If you get an unencrypted connection warning, click **OK** / **Skip**).
 
 ---
